@@ -2,9 +2,10 @@
 #폰(Termux) 1회 설치 — 실행: bash setup-termux.sh
 set -e
 
-echo "== 패키지 설치 (python, ffmpeg) =="
+echo "== 패키지 설치 (python, ffmpeg, termux-api) =="
 pkg update -y
-pkg install -y python ffmpeg
+#termux-api 에 termux-wake-lock 이 들어 있다 — 없으면 화면이 꺼질 때 변환이 멈춘다
+pkg install -y python ffmpeg termux-api
 
 echo "== yt-dlp 설치 =="
 #yt-dlp 는 순수 Python 이라 컴파일 없이 설치된다(웹 계층은 표준 라이브러리만 씀)

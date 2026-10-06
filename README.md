@@ -24,13 +24,16 @@
 상태 흐름: `queued → downloading → converting → done` (실패 시 `error`).
 작업 상태를 서버가 들고 있어서 브라우저를 닫거나 새로고침해도 변환은 계속됩니다.
 
+- **재생목록·채널 URL은 첫 항목만** 받습니다 (영상 1개 = 작업 1개).
+- 동시 변환은 2개까지, 나머지는 `queued`로 대기합니다 (폰 메모리 보호).
+- 인증이 없는 API라 `127.0.0.1`에만 바인드하고, Host·Origin이 로컬이 아닌 요청은 403입니다.
+
 ## 환경변수
 
 | 변수 | 기본값 | 용도 |
 |---|---|---|
 | `YTAUDIO_DOWNLOAD_DIR` | `~/Downloads/ytaudio` | mp3 저장 경로 |
 | `YTAUDIO_BITRATE` | `192` | mp3 비트레이트(kbps) |
-| `YTAUDIO_HOST` | `127.0.0.1` | 바인드 주소 |
 | `YTAUDIO_PORT` | `8777` | 포트 |
 
 ## 실행 — Mac
@@ -46,7 +49,7 @@ python server.py               # → http://127.0.0.1:8777
 
 1. **F-Droid**에서 Termux 설치 (Play 스토어판은 방치되어 패키지 설치가 깨집니다)
 2. `termux-setup-storage` → 권한 팝업에서 허용
-3. `bash setup-termux.sh` → python·ffmpeg·yt-dlp 설치
+3. `bash setup-termux.sh` → python·ffmpeg·termux-api·yt-dlp 설치
 4. `bash start.sh` → 서버 실행
 5. Chrome에서 `http://localhost:8777` → 메뉴 → **홈 화면에 추가** (PWA 설치)
 
