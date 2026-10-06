@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>음원 추출</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" href="/icon-192.png" />
+<meta name="theme-color" content="#0f1115" />
+<style>
+  :root {
+    --bg: #0f1115; --surface: #181b21; --border: #272b33;
+    --text: #e6e8ec; --text-dim: #9aa0ab; --accent: #4f8ef7; --danger: #e5534b; --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 20px; }
+  form { display: flex; gap: 8px; margin-bottom: 24px; }
+  input, button { font: inherit; border-radius: 8px; border: 1px solid var(--border); }
+  input {
+    flex: 1; min-width: 0; padding: 12px 14px; background: var(--surface); color: var(--text);
+    /* 모바일에서 포커스 시 확대되지 않도록 16px 유지 */ font-size: 16px;
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    padding: 12px 18px; background: var(--accent); color: #fff; border-color: transparent;
+    font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .job {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; margin-bottom: 10px;
+  }
+  .job-title { font-weight: 600; word-break: break-all; }
+  .title-row { display: flex; gap: 8px; align-items: flex-start; }
+  .title-row .job-title { flex: 1; min-width: 0; }
+  .ghost {
+    padding: 4px 10px; background: transparent; color: var(--text-dim);
+    border-color: var(--border); font-size: 13px; font-weight: 500; flex-shrink: 0;
+  }
+  .edit-row { display: flex; gap: 6px; }
+  .edit-row input { padding: 8px 10px; }
+  .edit-row button { padding: 8px 12px; }
+  .job-meta { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .err { color: var(--danger); font-size: 13px; margin-top: 6px; word-break: break-all; }
+  a.dl { display: inline-block; margin-top: 10px; color: var(--ok); font-weight: 600; }
+  .empty { color: var(--text-dim); text-align: center; padding: 32px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>음원 추출</h1>
+
+  <form id="f">
+    <input id="url" type="url" placeholder="영상 링크 붙여넣기" required autocomplete="off" />
+    <button type="submit">추출</button>
+  </form>
+
+  <div id="list" aria-live="polite"></div>
+</main>
+
+<script>
+  const LABEL = { queued: "대기 중", downloading: "다운로드 중", converting: "mp3 변환 중", done: "완료", error: "실패" };
+
+  const f = document.getElementById("f");
+  const urlInput = document.getElementById("url");
+  const list = document.getElementById("list");
+
+  //수정 중인 작업 id — 폴링 재렌더가 입력 중인 값을 날리지 않도록 잡아둔다
+  let editingId = null;
+
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = f.querySelector("button");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: urlInput.value }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail ?? "요청 실패");
+      urlInput.value = "";
+      await refresh();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function fmtSize(bytes) {
+    if (!bytes) return "";
+    return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  function titleBlock(j) {
+    const title = j.title ?? j.url;
+    if (j.id === editingId) {
+      return `<div class="edit-row">
+        <input id="edit-input" type="text" value="${esc(title)}" aria-label="제목" />
+        <button data-action="save" data-id="${j.id}">저장</button>
+        <button class="ghost" data-action="cancel">취소</button>
+      </div>`;
+    }
+    //제목 수정 = 파일명 변경이라 완료된 작업에만 노출
+    const editBtn =
+      j.status === "done" ? `<button class="ghost" data-action="edit" data-id="${j.id}">수정</button>` : "";
+    return `<div class="title-row"><div class="job-title">${esc(title)}</div>${editBtn}</div>`;
+  }
+
+  function render(jobs) {
+    if (!jobs.length) {
+      list.innerHTML = '<p class="empty">링크를 넣으면 여기에 작업이 표시됩니다.</p>';
+      return;
+    }
+    list.innerHTML = jobs
+      .map((j) => {
+        const showBar = j.status === "downloading" || j.status === "converting";
+        return `<div class="job">
+          ${titleBlock(j)}
+          <div class="job-meta">${LABEL[j.status]}${j.status === "downloading" ? ` · ${j.progress}%` : ""}${j.size ? ` · ${fmtSize(j.size)}` : ""}</div>
+          ${showBar ? `<div class="bar"><span style="width:${j.status === "converting" ? 100 : j.progress}%"></span></div>` : ""}
+          ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}
+          ${j.status === "done" ? `<a class="dl" href="/api/jobs/${j.id}/file" download>내려받기</a>` : ""}
+        </div>`;
+      })
+      .join("");
+
+    if (editingId) {
+      const input = document.getElementById("edit-input");
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }
+  }
+
+  list.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const { action, id } = btn.dataset;
+
+    if (action === "edit") {
+      editingId = id;
+      refresh();
+    } else if (action === "cancel") {
+      editingId = null;
+      refresh();
+    } else if (action === "save") {
+      await saveTitle(id, document.getElementById("edit-input").value);
+    }
+  });
+
+  list.addEventListener("keydown", (e) => {
+    if (e.target.id !== "edit-input") return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveTitle(editingId, e.target.value);
+    } else if (e.key === "Escape") {
+      editingId = null;
+      refresh();
+    }
+  });
+
+  async function saveTitle(id, title) {
+    try {
+      const res = await fetch(`/api/jobs/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail ?? "수정 실패");
+      editingId = null;
+      refresh();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function refresh() {
+    render(await fetch("/api/jobs").then((r) => r.json()));
+  }
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  /* 진행 중 작업이 있을 때만 1초 폴링 — 변환은 서버가 들고 있어서 새로고침해도 이어진다 */
+  async function tick() {
+    //수정 중에는 재렌더를 건너뛴다(입력값 보존) — 상태만 다음 턴에 따라잡는다
+    if (editingId) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    const jobs = await fetch("/api/jobs").then((r) => r.json());
+    render(jobs);
+    const active = jobs.some((j) => j.status !== "done" && j.status !== "error");
+    setTimeout(tick, active ? 1000 : 5000);
+  }
+  tick();
+
+  //PWA 설치(홈화면 추가)용 — localhost 는 보안 출처로 취급돼서 HTTPS 없이도 등록된다
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch((err) => console.warn("sw 등록 실패", err));
+  }
+</script>
+</body>
+</html>
