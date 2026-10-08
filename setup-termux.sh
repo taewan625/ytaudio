@@ -21,7 +21,7 @@ fi
 
 echo "== yt-dlp 설치 =="
 #yt-dlp 는 순수 Python 이라 컴파일 없이 설치된다(웹 계층은 표준 라이브러리만 씀)
-pip install --upgrade pip
+#pip 자체는 올리지 않는다 — Termux 는 pip 를 python-pip 패키지로 관리해서 pip 로 pip 를 올리면 거부된다
 pip install -U yt-dlp
 
 STORAGE="$HOME/storage/downloads"
