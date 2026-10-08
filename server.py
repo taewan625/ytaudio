@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,7 +24,12 @@ from yt_dlp import YoutubeDL
 
 STATIC_DIR = Path(__file__).parent / "static"
 DOWNLOAD_DIR = Path(os.environ.get("YTAUDIO_DOWNLOAD_DIR", Path.home() / "Downloads" / "ytaudio"))
-AUDIO_BITRATE = os.environ.get("YTAUDIO_BITRATE", "192")
+#원본 오디오 스트림을 그대로 담아내므로 확장자가 소스마다 다르다(opus·m4a 등)
+#mimetypes 가 모르는 오디오 확장자를 보태 둔다 — 모르면 브라우저가 파일을 재생 대신 알 수 없는 바이너리로 받는다
+mimetypes.add_type("audio/ogg", ".opus")
+mimetypes.add_type("audio/mp4", ".m4a")
+mimetypes.add_type("audio/flac", ".flac")
+mimetypes.add_type("audio/webm", ".weba")
 #인증이 없는 API 라 루프백 고정 — LAN 에 열 수단을 남기지 않는다
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("YTAUDIO_PORT", "8777"))
@@ -57,14 +63,28 @@ def _safe_stem(title: str) -> str:
     return cleaned.encode()[:MAX_FILENAME_BYTES].decode(errors="ignore").strip().strip(".")
 
 
-def _unique_path(directory: Path, stem: str) -> Path:
-    """같은 이름이 이미 있으면 '(2)' 부터 번호를 붙인다 — 기존 mp3 를 덮어쓰지 않게."""
-    target = directory / f"{stem}.mp3"
+def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
+    """같은 이름이 이미 있으면 '(2)' 부터 번호를 붙인다 — 기존 음원을 덮어쓰지 않게."""
+    target = directory / f"{stem}{suffix}"
     seq = 2
     while target.exists():
-        target = directory / f"{stem} ({seq}).mp3"
+        target = directory / f"{stem} ({seq}){suffix}"
         seq += 1
     return target
+
+
+def _media_scan(*paths: Path) -> None:
+    """안드로이드 미디어 DB 에 등록 — 스캔을 안 하면 파일이 있어도 음악 앱 목록에 안 뜬다."""
+    scanner = shutil.which("termux-media-scan")
+    if not scanner:
+        #Mac 이거나 termux-api 미설치 — 스캔 대상이 없는 환경이라 그냥 넘긴다
+        return
+    try:
+        subprocess.run([scanner, *(str(p) for p in paths)], timeout=20, check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        #스캔 실패는 파일 자체와 무관하다 — 다운로드를 실패로 만들지 않는다
+        return
 
 
 def _run_job(job_id: str, url: str) -> None:
@@ -87,10 +107,14 @@ def _run_job(job_id: str, url: str) -> None:
                 job["status"] = "converting"
 
         opts = {
-            "format": "bestaudio/best",
+            #m4a(AAC) 를 우선 고른다 — 이미 AAC 인 스트림을 컨테이너만 바꿔 담아 재인코딩이 없고(손실 1회),
+            #opus 는 Samsung Music 등 일부 음악 앱이 목록에 띄우지 않는다
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
             "outtmpl": str(workdir / "%(title)s.%(ext)s"),
             "postprocessors": [
-                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": AUDIO_BITRATE}
+                {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"},
+                #태그가 없으면 음악 앱 목록에 곡명 대신 파일명이 뜬다
+                {"key": "FFmpegMetadata"},
             ],
             "progress_hooks": [hook],
             #noplaylist 는 '영상+재생목록 혼합' URL 에만 듣는다 — 순수 재생목록·채널 URL 은
@@ -110,16 +134,18 @@ def _run_job(job_id: str, url: str) -> None:
                 info = next(iter(info.get("entries") or []), None) or {}
             job["title"] = info.get("title") or url
 
-            #workdir 는 작업당 하나라 비어 있었다 — 변환 결과 mp3 가 유일한 산출물
-            produced = next(iter(workdir.glob("*.mp3")), None)
+            #workdir 는 작업당 하나라 비어 있었다 — 추출 결과가 유일한 산출물
+            #확장자는 원본 스트림에 따라 달라져서(m4a·opus 등) 고정 glob 을 쓸 수 없다
+            produced = next((p for p in sorted(workdir.iterdir()) if p.is_file()), None)
             if produced is None:
-                raise RuntimeError("mp3 변환 결과를 찾지 못했습니다")
+                raise RuntimeError("음원 추출 결과를 찾지 못했습니다")
 
-            final = _unique_path(DOWNLOAD_DIR, produced.stem)
+            final = _unique_path(DOWNLOAD_DIR, produced.stem, produced.suffix)
             shutil.move(str(produced), str(final))
             job["filename"] = final.name
             job["size"] = final.stat().st_size
             job["status"] = "done"
+            _media_scan(final)
         except Exception as e:  # noqa: BLE001 — 실패 사유를 UI 에 그대로 보여준다
             #error 를 먼저 채운다 — status 가 먼저 바뀌면 폴링 한 틱 동안 사유 없는 '실패'가 보인다
             job["error"] = str(e)
@@ -145,7 +171,7 @@ def create_job(url: str) -> dict:
 
 
 def rename_job(job: dict, title: str) -> dict:
-    """제목 수정 — 디스크의 mp3 파일명까지 같이 바꾼다(제목과 파일명이 어긋나지 않게)."""
+    """제목 수정 — 디스크의 음원 파일명까지 같이 바꾼다(제목과 파일명이 어긋나지 않게)."""
     stem = _safe_stem(title)
     if not stem:
         raise ValueError("제목을 입력해 주세요.")
@@ -157,10 +183,13 @@ def rename_job(job: dict, title: str) -> dict:
         #이름이 그대로면 아무것도 안 한다 — 자기 파일을 피해 '(2)' 가 붙는 것 방지
         return job
 
-    target = _unique_path(DOWNLOAD_DIR, stem)
+    #확장자는 그대로 둔다 — 제목만 바꾸는 것이지 포맷을 바꾸는 게 아니다
+    target = _unique_path(DOWNLOAD_DIR, stem, current.suffix)
     current.rename(target)
     job["filename"] = target.name
     job["title"] = target.stem
+    #옛 경로가 미디어 DB 에 남아 음악 앱에 유령 항목으로 보이므로 둘 다 스캔한다
+    _media_scan(current, target)
     return job
 
 
@@ -281,9 +310,10 @@ class Handler(BaseHTTPRequestHandler):
         if not path.exists():
             return self._send_error_json(410, "파일이 삭제되었습니다.")
 
-        #한글 파일명은 RFC 5987 형식으로 — 그냥 넣으면 헤더 인코딩에서 깨진다
+        #확장자가 원본 스트림마다 달라서(m4a·opus 등) 타입을 고정하지 않는다
         self.send_response(200)
-        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        #한글 파일명은 RFC 5987 형식으로 — 그냥 넣으면 헤더 인코딩에서 깨진다
         self.send_header("Content-Length", str(path.stat().st_size))
         self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(path.name)}")
         self.end_headers()

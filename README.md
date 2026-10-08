@@ -1,6 +1,6 @@
 # ytaudio
 
-영상 링크에서 mp3를 추출하는 개인용 도구. 웹 UI + 작업 API 한 프로세스.
+영상 링크에서 음원(m4a)을 추출하는 개인용 도구. 웹 UI + 작업 API 한 프로세스.
 
 구성은 두 파일뿐입니다.
 
@@ -18,8 +18,8 @@
 | POST | `/api/jobs` | `{"url": "..."}` → 작업 생성, 스레드에서 추출·변환 시작 |
 | GET | `/api/jobs` | 작업 목록(최신순) |
 | GET | `/api/jobs/{id}` | 단건 상태 — 진행률 폴링용 |
-| PATCH | `/api/jobs/{id}` | `{"title": "..."}` → 제목 + 실제 mp3 파일명 변경 (완료 상태만) |
-| GET | `/api/jobs/{id}/file` | mp3 내려받기 |
+| PATCH | `/api/jobs/{id}` | `{"title": "..."}` → 제목 + 실제 음원 파일명 변경 (완료 상태만) |
+| GET | `/api/jobs/{id}/file` | 음원 내려받기 |
 
 상태 흐름: `queued → downloading → converting → done` (실패 시 `error`).
 작업 상태를 서버가 들고 있어서 브라우저를 닫거나 새로고침해도 변환은 계속됩니다.
@@ -32,9 +32,18 @@
 
 | 변수 | 기본값 | 용도 |
 |---|---|---|
-| `YTAUDIO_DOWNLOAD_DIR` | `~/Downloads/ytaudio` | mp3 저장 경로 |
-| `YTAUDIO_BITRATE` | `192` | mp3 비트레이트(kbps) |
+| `YTAUDIO_DOWNLOAD_DIR` | `~/Downloads/ytaudio` | 음원 저장 경로 |
 | `YTAUDIO_PORT` | `8777` | 포트 |
+
+## 음질 — 재인코딩하지 않습니다
+
+원본 오디오 스트림을 **컨테이너만 바꿔 담습니다**(`-acodec copy` 상당). 손실 압축을 풀었다 다시 압축하는 과정이 없어 소스 그대로의 음질이고, 변환이 빨라 배터리도 덜 씁니다.
+
+- 포맷은 **m4a(AAC) 우선** — opus 는 Samsung Music 등 일부 음악 앱이 목록에 띄우지 않습니다
+- `FFmpegMetadata` 로 제목·아티스트 태그를 심습니다. 없으면 음악 앱에 곡명 대신 파일명이 뜹니다
+- 저장·이름변경 후 `termux-media-scan` 을 호출합니다. 안드로이드는 미디어 DB 에 등록돼야 음악 앱 목록에 나타납니다 (Mac 에서는 자동으로 건너뜀)
+
+검증: 소스 `aac 69578bps` → 산출 `aac 69578bps` (동일 비트레이트 = 무변환).
 
 ## 실행 — Mac
 
@@ -54,7 +63,7 @@ python server.py               # → http://127.0.0.1:8777
 5. Chrome에서 `http://localhost:8777` → 메뉴 → **홈 화면에 추가** (PWA 설치)
 
 `localhost`는 Chrome이 보안 출처로 취급하므로 HTTPS 없이도 PWA가 설치됩니다.
-mp3는 폰의 `Download/ytaudio/`에 저장돼 음악·파일 앱에서 바로 보입니다.
+음원은 폰의 `Download/ytaudio/`에 저장돼 음악·파일 앱에서 바로 보입니다.
 
 ### 폰에서 알아둘 것
 
