@@ -143,6 +143,8 @@ def _run_job(job_id: str, url: str) -> None:
             final = _unique_path(DOWNLOAD_DIR, produced.stem, produced.suffix)
             shutil.move(str(produced), str(final))
             job["filename"] = final.name
+            #서버와 브라우저가 같은 기기라 UI 는 내려받기 대신 저장 위치를 보여준다
+            job["path"] = str(final)
             job["size"] = final.stat().st_size
             job["status"] = "done"
             _media_scan(final)
@@ -163,6 +165,7 @@ def create_job(url: str) -> dict:
         "progress": 0.0,
         "title": None,
         "filename": None,
+        "path": None,
         "size": None,
         "error": None,
     }
@@ -187,6 +190,7 @@ def rename_job(job: dict, title: str) -> dict:
     target = _unique_path(DOWNLOAD_DIR, stem, current.suffix)
     current.rename(target)
     job["filename"] = target.name
+    job["path"] = str(target)
     job["title"] = target.stem
     #옛 경로가 미디어 DB 에 남아 음악 앱에 유령 항목으로 보이므로 둘 다 스캔한다
     _media_scan(current, target)

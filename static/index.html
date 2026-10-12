@@ -53,7 +53,10 @@
     margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
     background: #2a1a19; border: 1px solid var(--danger); color: var(--danger);
   }
-  a.dl { display: inline-block; margin-top: 10px; color: var(--ok); font-weight: 600; }
+  .saved {
+    margin-top: 10px; color: var(--ok); font-size: 13px; word-break: break-all;
+    user-select: all; /* 경로를 길게 눌러 한 번에 복사 */
+  }
   .empty { color: var(--text-dim); text-align: center; padding: 32px 0; }
 </style>
 </head>
@@ -154,7 +157,7 @@
           <div class="job-meta">${LABEL[j.status]}${j.status === "downloading" ? ` · ${j.progress}%` : ""}${j.size ? ` · ${fmtSize(j.size)}` : ""}</div>
           ${showBar ? `<div class="bar"><span style="width:${j.status === "converting" ? 100 : j.progress}%"></span></div>` : ""}
           ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}
-          ${j.status === "done" ? `<a class="dl" href="/api/jobs/${j.id}/file" download>내려받기</a>` : ""}
+          ${j.status === "done" ? `<div class="saved">저장됨 · ${esc(j.path ?? j.filename ?? "")}</div>` : ""}
         </div>`;
       })
       .join("");
