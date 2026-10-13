@@ -35,6 +35,10 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("YTAUDIO_PORT", "8777"))
 TMP_DIR = DOWNLOAD_DIR / ".tmp"
 
+#한 곡 기준 상한 — 장시간 믹스·라이브를 걸러 저장공간과 데이터를 아낀다
+MAX_DURATION_MIN = int(os.environ.get("YTAUDIO_MAX_DURATION_MIN", "10"))
+MAX_DURATION_SEC = MAX_DURATION_MIN * 60
+
 #파일명에 못 쓰는 문자 — 경로 구분자를 지워서 DOWNLOAD_DIR 밖으로 못 나가게 한다
 INVALID_FILENAME_CHARS = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 #안드로이드 공유 저장소가 파일명 255바이트 제한이라 문자 수가 아니라 UTF-8 바이트로 자른다
@@ -128,6 +132,20 @@ def _run_job(job_id: str, url: str) -> None:
 
         try:
             with YoutubeDL(opts) as ydl:
+                #받기 전에 길이부터 본다 — 다 받고 나서 거르면 데이터·시간을 이미 쓴 뒤다
+                probe = ydl.extract_info(url, download=False)
+                if probe.get("_type") == "playlist":
+                    probe = next(iter(probe.get("entries") or []), None) or {}
+
+                probe_duration = probe.get("duration")
+                if not probe_duration:
+                    raise RuntimeError("길이를 알 수 없는 영상입니다(라이브 등).")
+                if probe_duration > MAX_DURATION_SEC:
+                    raise RuntimeError(
+                        f"{int(probe_duration) // 60}분짜리라 받지 않았습니다. "
+                        f"상한은 {MAX_DURATION_MIN}분입니다(YTAUDIO_MAX_DURATION_MIN 으로 조정)."
+                    )
+
                 info = ydl.extract_info(url, download=True)
             #재생목록 URL 이면 제목이 목록 이름이라 실제로 받은 첫 항목에서 가져온다(파일명과 어긋나지 않게)
             if info.get("_type") == "playlist":
@@ -158,6 +176,8 @@ def _run_job(job_id: str, url: str) -> None:
 
 #검색 결과 수 — 늘릴수록 응답이 느려진다
 SEARCH_LIMIT = 10
+#길이 상한을 넘는 후보가 섞여 들어오므로 넉넉히 받아서 거른 뒤 SEARCH_LIMIT 개만 남긴다
+SEARCH_FETCH_LIMIT = SEARCH_LIMIT * 3
 
 
 def search_videos(query: str) -> list[dict]:
@@ -174,15 +194,23 @@ def search_videos(query: str) -> list[dict]:
         "socket_timeout": 15,
     }
     with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"ytsearch{SEARCH_LIMIT}:{query}", download=False)
+        info = ydl.extract_info(f"ytsearch{SEARCH_FETCH_LIMIT}:{query}", download=False)
 
     results = []
     for entry in info.get("entries") or []:
         if not entry or not entry.get("url"):
             continue
+        #길이를 모르는 항목(라이브 등)도 제외한다 — 끝이 없어 받을 수 없다
+        duration = entry.get("duration")
+        if not duration or duration > MAX_DURATION_SEC:
+            continue
+        if len(results) >= SEARCH_LIMIT:
+            break
         #thumbnails 는 작은 것부터 정렬돼 온다 — 목록용이라 중간 크기를 쓴다
         thumbs = entry.get("thumbnails") or []
         results.append({
+            #id 는 미리듣기용 — 임베드 플레이어 주소를 만드는 데 쓴다
+            "id": entry.get("id"),
             "title": entry.get("title") or "(제목 없음)",
             "url": entry["url"],
             "channel": entry.get("channel") or entry.get("uploader"),
@@ -295,7 +323,8 @@ class Handler(BaseHTTPRequestHandler):
             if not query:
                 return self._send_error_json(400, "검색어를 입력해 주세요.")
             try:
-                return self._send_json(200, search_videos(query))
+                #상한은 서버가 쥐고 있다 — 화면이 안내 문구를 만들 수 있게 같이 내려준다
+                return self._send_json(200, {"limitMinutes": MAX_DURATION_MIN, "items": search_videos(query)})
             except Exception as e:  # noqa: BLE001 — 네트워크·추출 실패 사유를 UI 에 보여준다
                 return self._send_error_json(502, f"검색에 실패했습니다: {e}")
 
