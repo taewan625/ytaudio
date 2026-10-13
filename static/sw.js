@@ -21,6 +21,8 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
+  //검색 결과 썸네일 같은 외부 리소스는 브라우저에 맡긴다 — 캐시에 쌓이기만 하고 쓸모가 없다
+  if (url.origin !== self.location.origin) return;
 
   //껍데기는 네트워크 우선, 실패 시 캐시 — 서버가 꺼져 있어도 화면은 뜬다
   e.respondWith(

@@ -18,7 +18,7 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlparse, urlsplit
+from urllib.parse import parse_qs, quote, urlparse, urlsplit
 
 from yt_dlp import YoutubeDL
 
@@ -156,6 +156,42 @@ def _run_job(job_id: str, url: str) -> None:
             shutil.rmtree(workdir, ignore_errors=True)
 
 
+#검색 결과 수 — 늘릴수록 응답이 느려진다
+SEARCH_LIMIT = 10
+
+
+def search_videos(query: str) -> list[dict]:
+    """제목·채널·길이만 뽑는 가벼운 검색.
+
+    extract_flat 이라 항목별 상세 추출을 건너뛴다 — 끄면 10건에 수십 초가 걸린다.
+    """
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "extract_flat": True,
+        "skip_download": True,
+        "socket_timeout": 15,
+    }
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{SEARCH_LIMIT}:{query}", download=False)
+
+    results = []
+    for entry in info.get("entries") or []:
+        if not entry or not entry.get("url"):
+            continue
+        #thumbnails 는 작은 것부터 정렬돼 온다 — 목록용이라 중간 크기를 쓴다
+        thumbs = entry.get("thumbnails") or []
+        results.append({
+            "title": entry.get("title") or "(제목 없음)",
+            "url": entry["url"],
+            "channel": entry.get("channel") or entry.get("uploader"),
+            "duration": entry.get("duration"),
+            "thumbnail": thumbs[len(thumbs) // 2].get("url") if thumbs else None,
+        })
+    return results
+
+
 def create_job(url: str) -> dict:
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = {
@@ -249,6 +285,19 @@ class Handler(BaseHTTPRequestHandler):
     # ── 라우팅 ────────────────────────────────────────
     def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler 규약
         path = urlparse(self.path).path
+
+        if path == "/api/search":
+            #바깥으로 나가는 요청을 일으키므로 조회 API 중 유일하게 출처를 따진다
+            if not self._is_local_request():
+                return self._send_error_json(403, "로컬에서만 사용할 수 있습니다.")
+
+            query = parse_qs(urlparse(self.path).query).get("q", [""])[0].strip()
+            if not query:
+                return self._send_error_json(400, "검색어를 입력해 주세요.")
+            try:
+                return self._send_json(200, search_videos(query))
+            except Exception as e:  # noqa: BLE001 — 네트워크·추출 실패 사유를 UI 에 보여준다
+                return self._send_error_json(502, f"검색에 실패했습니다: {e}")
 
         if path == "/api/jobs":
             return self._send_json(200, list(reversed(jobs.values())))
